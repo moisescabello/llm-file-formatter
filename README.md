@@ -2,6 +2,10 @@
 
 A lightweight, single‑file HTML app to quickly format local files for sharing with LLMs. Drag and drop files or select a whole folder, preview the formatted result, and copy everything to your clipboard in one click.
 
+![Screenshot](assets/screenshot.svg)
+
+Live demo: https://moisescabello.github.io/llm-file-formatter/
+
 - Single file: `llm_file_formatter.html`
 - No build, no dependencies, works fully offline
 - English‑language interface (vanilla JavaScript)
@@ -41,6 +45,8 @@ A lightweight, single‑file HTML app to quickly format local files for sharing 
 
 Tip: When a folder is selected, you can choose specific files in the tree; the copy action will include only those selected files and preserve your selection order.
 
+If you prefer a single click, you can also use the drag & drop area without selecting a folder.
+
 ## Limits & Notes
 
 - Per‑file size limit: 10 MB
@@ -58,4 +64,3 @@ Tip: When a folder is selected, you can choose specific files in the tree; the c
 - Everything lives in a single file: `llm_file_formatter.html`
 - No external libraries or build steps. Just open the file and edit.
 - Contributions and suggestions are welcome.
-
