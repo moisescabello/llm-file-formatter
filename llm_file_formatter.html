@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM File Formatter</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+            background-color: #f0f4f8;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            color: #333;
+        }
+
+        h1 {
+            text-align: center;
+            color: #2c3e50;
+            margin-bottom: 30px;
+        }
+
+        #drop_zone {
+            border: 3px dashed #3498db;
+            border-radius: 20px;
+            width: 100%;
+            padding: 40px 20px;
+            text-align: center;
+            margin-bottom: 20px;
+            transition: all 0.3s ease;
+            background-color: #ecf0f1;
+            cursor: pointer;
+        }
+
+        #drop_zone:hover, #drop_zone.drag-over {
+            background-color: #d6eaf8;
+            transform: scale(1.02);
+        }
+
+        #drop_zone p {
+            font-size: 18px;
+            color: #7f8c8d;
+        }
+
+        #output {
+            margin-top: 20px;
+            padding: 20px;
+            border: 1px solid #bdc3c7;
+            border-radius: 10px;
+            white-space: pre-wrap;
+            font-family: 'Courier New', monospace;
+            max-height: 400px;
+            overflow-y: auto;
+            background-color: #fff;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .button {
+            display: inline-block;
+            width: calc(50% - 10px);
+            margin: 20px 5px;
+            padding: 15px 20px;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+            transition: background-color 0.3s ease;
+            text-align: center;
+        }
+
+        .button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        #copyButton {
+            background-color: #2ecc71;
+        }
+
+        #copyButton:hover {
+            background-color: #27ae60;
+        }
+
+        #addFolderButton {
+            background-color: #3498db;
+        }
+
+        #addFolderButton:hover {
+            background-color: #2980b9;
+        }
+
+        #status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 5px;
+            text-align: center;
+            font-weight: bold;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+
+        .file-tree {
+            margin: 20px 0;
+            background-color: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 10px;
+            max-height: 350px;
+            overflow-y: auto;
+            display: none;
+            font-size: 14px;
+        }
+
+        .tree-view {
+            list-style: none;
+            padding-left: 0;
+            margin: 0;
+        }
+
+        .tree-view ul {
+            list-style: none;
+            padding-left: 16px;
+            margin: 0;
+        }
+
+        .tree-item {
+            padding: 3px 2px;
+            border-radius: 4px;
+            margin: 3px 0;
+            display: flex;
+            align-items: flex-start;
+            flex-direction: column;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        .tree-item:hover > .item-content {
+            background-color: #f0f8ff;
+        }
+
+        .item-content {
+            display: flex;
+            align-items: center;
+            width: 100%;
+            min-height: 24px;
+            border-radius: 4px;
+            padding: 2px 0;
+        }
+
+        .tree-item label {
+            margin-left: 4px;
+            cursor: pointer;
+            flex: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            font-size: 13px;
+            display: inline-block;
+        }
+
+        .folder-icon, .file-icon {
+            margin-right: 4px;
+            margin-left: 0;
+            width: 16px;
+            text-align: center;
+            flex-shrink: 0;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .folder-icon {
+            color: #3d85c6;
+        }
+
+        .file-icon {
+            color: #696969;
+        }
+
+        .toggle-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 10px;
+            width: 14px;
+            height: 14px;
+            text-align: center;
+            padding: 0;
+            flex-shrink: 0;
+            color: #999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .checkbox-wrapper {
+            margin: 0 4px 0 0;
+            flex-shrink: 0;
+        }
+
+        .button-container {
+            display: flex;
+            justify-content: space-between;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+
+        .pulse {
+            animation: pulse 0.5s;
+        }
+    </style>
+</head>
+<body>
+    <h1>LLM File Formatter</h1>
+    <div id="drop_zone">
+        <p>Drag and drop files here</p>
+    </div>
+    <div class="file-tree" id="fileTree">
+        <div class="tree-view" id="treeView"></div>
+    </div>
+    <div class="button-container">
+        <button id="addFolderButton" class="button">Add folder</button>
+        <button id="copyButton" class="button">Copy to clipboard</button>
+    </div>
+    <label style="display:flex;align-items:center;gap:6px;margin-top:4px;font-size:14px;">
+        <input type="checkbox" id="hideBinaryToggle"> Hide binaries
+    </label>
+    <label style="display:flex;align-items:center;gap:6px;margin-top:4px;font-size:14px;">
+        <span>Encoding:</span>
+        <select id="encodingSelect">
+            <option value="utf-8" selected>UTF-8</option>
+            <option value="windows-1252">ISO-8859-1 / Windows-1252</option>
+        </select>
+    </label>
+    <div id="status"></div>
+    <div id="output"></div>
+
+    <script>
+        let selectedFiles = [];
+        let selectionOrder = [];
+        let filesLoading = false;
+
+        // Limits to control memory usage
+        const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB per file
+        const MAX_CONTENT_LENGTH = 200_000; // Max characters per content
+        const MAX_FILES = 100; // Max files per operation
+        const MAX_TOTAL_SIZE = 50 * 1024 * 1024; // 50MB total
+
+        // Index files by path to avoid storing contents in memory
+        let fileMap = new Map();
+        let currentFolderFiles = [];
+
+        function setLoading(loading) {
+            filesLoading = loading;
+            const btn = document.getElementById('copyButton');
+            if (btn) btn.disabled = loading;
+        }
+
+        // Determine if a file should be treated as text
+        function isTextFile(file) {
+            // If the browser provides a textual MIME type, use it
+            if (file && typeof file.type === 'string' && file.type.startsWith('text/')) {
+                return true;
+            }
+
+            // Whitelist of common text extensions
+            const textExtensions = new Set([
+                'txt','md','markdown','js','mjs','cjs','ts','tsx','jsx','html','htm','css','svg',
+                'json','jsonc','xml','csv','py','java','kt','kts','swift','c','h','cpp','cc','hh','hpp','rs',
+                'go','rb','php','pl','r','sql','sh','bash','zsh','fish','ps1','yml','yaml','toml','ini','cfg','conf','log',
+                'gradle','properties','env','dockerfile','makefile','mk','cmake','nuspec','cs','vb','scala','lua'
+            ]);
+
+            const name = file && file.name ? file.name : '';
+            const parts = name.split('.');
+            const ext = parts.length > 1 ? parts.pop().toLowerCase() : '';
+
+            // Consider some extensionless names as text (e.g., LICENSE, Makefile)
+            const textNames = new Set(['license', 'licence', 'copying', 'readme', 'changelog', 'makefile', 'dockerfile']);
+            if (!ext && textNames.has(name.toLowerCase())) return true;
+
+            return textExtensions.has(ext);
+        }
+
+        // Basic validation of file count and total size
+        function validateFiles(files, warnOnly = false) {
+            const count = files.length;
+            if (count > MAX_FILES) {
+                showStatus(`Too many files (max ${MAX_FILES})`, 'error');
+                return warnOnly ? true : false;
+            }
+            let totalSize = 0;
+            for (const f of files) totalSize += f.size || 0;
+            if (totalSize > MAX_TOTAL_SIZE) {
+                const lim = (MAX_TOTAL_SIZE / 1024 / 1024).toFixed(0);
+                showStatus(`Total size exceeds limit (${lim}MB)`, 'error');
+                return warnOnly ? true : false;
+            }
+            return true;
+        }
+
+        // Sanitize the language tag for the code fence
+        function sanitizeLangTag(tag) {
+            const t = (tag || '').toString().toLowerCase();
+            return /^[a-z0-9+\-]+$/.test(t) ? t : '';
+        }
+
+        const LANG_MAP = {
+            js: 'javascript', mjs: 'javascript', cjs: 'javascript',
+            ts: 'typescript', tsx: 'tsx', jsx: 'jsx',
+            py: 'python', rb: 'ruby',
+            sh: 'bash', bash: 'bash', zsh: 'bash', fish: 'bash', env: 'bash',
+            ps1: 'powershell',
+            yml: 'yaml', yaml: 'yaml',
+            html: 'html', htm: 'html',
+            kt: 'kotlin', kts: 'kotlin',
+            rs: 'rust',
+            c: 'c', h: 'c',
+            cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'cpp', hh: 'cpp',
+            cs: 'csharp',
+            md: 'markdown', markdown: 'markdown',
+            toml: 'toml',
+            ini: 'ini', cfg: 'ini', conf: 'ini', properties: 'ini',
+            gradle: 'groovy',
+            dockerfile: 'dockerfile', makefile: 'makefile', mk: 'makefile', cmake: 'cmake',
+            xml: 'xml', nuspec: 'xml',
+            jsonc: 'json'
+        };
+        function mapLangTag(ext) {
+            const t = sanitizeLangTag(ext);
+            return LANG_MAP[t] || t;
+        }
+
+        function handleDrop(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            // Clear drag visual state
+            const dz = document.getElementById('drop_zone');
+            dz.classList.remove('drag-over');
+
+            // Convert to array and filter text files
+            const allFiles = Array.from(e.dataTransfer.files || []);
+            const textFiles = allFiles.filter(isTextFile);
+
+            // Validate before processing (on text files)
+            if (!validateFiles(textFiles)) return;
+            const skipped = allFiles.length - textFiles.length;
+
+            let output = document.getElementById('output');
+            output.innerHTML = '';
+
+            if (skipped > 0) {
+                console.warn(`Skipped ${skipped} binary file(s) on drop`);
+                showStatus(`Skipped ${skipped} non-text file(s)`, 'success');
+            }
+
+            if (textFiles.length === 0) {
+                // Nothing to process
+                return;
+            }
+
+            let processedFiles = 0;
+            const totalFiles = textFiles.length;
+            let hadErrors = false;
+            let omittedLarge = 0;
+            const results = new Array(totalFiles);
+
+            function finalize() {
+                output.innerHTML = results.join('');
+                const msg = omittedLarge > 0
+                  ? `Files prepared. Skipped ${omittedLarge} large file(s). Click "Copy".`
+                  : 'Files prepared. Click "Copy".';
+                showStatus(msg, hadErrors ? 'error' : 'success');
+            }
+
+            const encodingSelect = document.getElementById('encodingSelect');
+            const selectedEncoding = encodingSelect && encodingSelect.value ? encodingSelect.value : 'utf-8';
+            for (let i = 0; i < textFiles.length; i++) {
+                const file = textFiles[i];
+
+                if (file.size > MAX_FILE_SIZE) {
+                    console.warn(`Skipped very large file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
+                    omittedLarge++;
+                    results[i] = '';
+                    processedFiles++;
+                    if (processedFiles === totalFiles) finalize();
+                    continue;
+                }
+
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    let content = e.target.result || '';
+                    if (content.length > MAX_CONTENT_LENGTH) {
+                        content = content.substring(0, MAX_CONTENT_LENGTH) + '\n[... content truncated ...]';
+                    }
+                    const parts = file.name.split('.');
+                    const extRaw = parts.length > 1 ? parts.pop().toLowerCase() : '';
+                    const fileExtension = mapLangTag(extRaw);
+                    const fence = getSafeFence(content);
+                    const safeName = escapeHtml(file.name);
+                    results[i] = 'Filename: ' + safeName + '\n' + fence + fileExtension + '\n' + escapeHtml(content) + '\n' + fence + '\n\n';
+                    processedFiles++;
+                    if (processedFiles === totalFiles) finalize();
+                };
+                reader.onerror = function(e) {
+                    console.error(`Error reading file ${file.name}:`, e);
+                    hadErrors = true;
+                    results[i] = '';
+                    processedFiles++;
+                    if (processedFiles === totalFiles) finalize();
+                };
+                reader.onabort = function() {
+                    console.warn(`Read cancelled for ${file.name}`);
+                    hadErrors = true;
+                    results[i] = '';
+                    processedFiles++;
+                    if (processedFiles === totalFiles) finalize();
+                };
+                reader.readAsText(file, selectedEncoding);
+            }
+        }
+
+        function handleDragOver(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            document.getElementById('drop_zone').classList.add('drag-over');
+        }
+
+        function handleDragLeave(e) {
+            document.getElementById('drop_zone').classList.remove('drag-over');
+        }
+
+        async function copyToClipboard() {
+            const output = document.getElementById('output');
+            let textToCopy = '';
+
+            if (selectionOrder.length > 0) {
+                // Build content by reading on-demand only selected files
+                const partsOut = [];
+                for (const filePath of selectionOrder) {
+                    const file = fileMap.get(filePath);
+                    if (!file) continue;
+                    if (!isTextFile(file)) continue;
+                    if (file.size > MAX_FILE_SIZE) {
+                        console.warn(`Skipped very large file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
+                        continue;
+                    }
+                    try {
+                        const contentRaw = await readFileAsText(file);
+                        let content = contentRaw || '';
+                        if (content.length > MAX_CONTENT_LENGTH) {
+                            content = content.substring(0, MAX_CONTENT_LENGTH) + '\n[... content truncated ...]';
+                        }
+                        const parts = file.name.split('.');
+                        const extRaw = parts.length > 1 ? parts.pop().toLowerCase() : '';
+                        const fileExtension = mapLangTag(extRaw);
+                        const fence = getSafeFence(content);
+                        const safeName = escapeHtml(file.name);
+                        partsOut.push('Filename: ' + safeName + '\n' + fence + fileExtension + '\n' + escapeHtml(content) + '\n' + fence + '\n\n');
+                    } catch (err) {
+                        console.error(`Error reading file ${file.name}:`, err);
+                        showStatus(`Error reading ${file.name}`, 'error');
+                    }
+                }
+                textToCopy = partsOut.join('');
+                output.innerHTML = textToCopy;
+                // Copy visible text (without HTML entities)
+                textToCopy = output.innerText || output.textContent || '';
+            } else {
+                textToCopy = output.innerText || output.textContent || '';
+            }
+
+            try {
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    await navigator.clipboard.writeText(textToCopy);
+                } else {
+                    // Fallback seguro
+                    const ok = fallbackCopyText(textToCopy);
+                    if (!ok) throw new Error('Fallback copy failed');
+                }
+                showStatus('Content copied to clipboard!', 'success');
+            } catch (err) {
+                console.error('Error copying with modern API:', err);
+                // Try fallback if it fails
+                const ok = fallbackCopyText(textToCopy);
+                if (!ok) {
+                    showStatus('Error copying to clipboard', 'error');
+                }
+            }
+        }
+
+        function fallbackCopyText(text) {
+            try {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.setAttribute('readonly', '');
+                ta.style.position = 'fixed';
+                ta.style.top = '-1000px';
+                document.body.appendChild(ta);
+                ta.focus();
+                ta.select();
+                const ok = document.execCommand('copy');
+                document.body.removeChild(ta);
+                return ok;
+            } catch (_) {
+                return false;
+            }
+        }
+
+        function escapeHtml(unsafe) {
+            return unsafe
+                 .replace(/&/g, "&amp;")
+                 .replace(/</g, "&lt;")
+                 .replace(/>/g, "&gt;")
+                 .replace(/"/g, "&quot;")
+                 .replace(/'/g, "&#039;")
+                 .replace(/`/g, "&#96;");
+        }
+
+        // Generate a safe backtick fence to wrap content that may include backticks
+        function getSafeFence(text) {
+            const matches = (typeof text === 'string' ? text : '').match(/`+/g);
+            let maxRun = 0;
+            if (matches) {
+                for (const m of matches) {
+                    if (m.length > maxRun) maxRun = m.length;
+                }
+            }
+            const count = Math.max(3, maxRun + 1);
+            return '`'.repeat(count);
+        }
+
+        function showStatus(message, type) {
+            let status = document.getElementById('status');
+            status.textContent = message;
+            status.className = type;
+            status.style.opacity = '1';
+            
+            let dropZone = document.getElementById('drop_zone');
+            dropZone.classList.add('pulse');
+            
+            setTimeout(() => {
+                status.style.opacity = '0';
+                dropZone.classList.remove('pulse');
+            }, 2000);
+        }
+
+        // New function to select folder
+        function selectFolder() {
+            // Create an invisible file input
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.webkitdirectory = true;
+            input.multiple = true;
+            
+            input.onchange = function(e) {
+                const fileTree = document.getElementById('fileTree');
+                fileTree.style.display = 'block';
+                fileTree.style.height = 'auto';
+                fileTree.style.minHeight = '200px';
+                
+                const files = Array.from(e.target.files);
+                const textFiles = files.filter(isTextFile);
+
+                // Validate but allow to continue for large selections (warn only)
+                validateFiles(textFiles, true);
+
+                // Reset selection and index
+                selectedFiles = [];
+                selectionOrder = [];
+                fileMap = new Map();
+                currentFolderFiles = files;
+
+                // Create tree structure
+                const tree = buildFileTree(getFilteredFolderFiles());
+                renderFileTree(tree);
+
+                // Index files by path for on-demand reading
+                for (const file of files) {
+                    const path = '/' + (file.webkitRelativePath || file.name);
+                    fileMap.set(path, file);
+                }
+
+                setLoading(false);
+                showStatus('Folder loaded. Select files and click "Copy".', 'success');
+            };
+            
+            input.click();
+        }
+        
+        function getFilteredFolderFiles() {
+            const hb = document.getElementById('hideBinaryToggle');
+            const list = currentFolderFiles || [];
+            return hb && hb.checked ? list.filter(isTextFile) : list;
+        }
+        
+        // Build the tree structure from files
+        function buildFileTree(files) {
+            const root = { children: {}, isFolder: true, name: 'root', path: '/' };
+            
+            files.forEach(file => {
+                // Build the relative path (fallback if webkitRelativePath is missing)
+                const path = file.webkitRelativePath || file.name;
+                const parts = path.split('/');
+                
+                let current = root;
+                let currentPath = '';
+                
+                // Traverse/build the tree structure
+                for (let i = 0; i < parts.length; i++) {
+                    const part = parts[i];
+                    currentPath += (currentPath ? '/' : '') + part;
+                    
+                    if (i === parts.length - 1) {
+                        // It's a file
+                        current.children[part] = {
+                            isFolder: false,
+                            name: part,
+                            path: '/' + currentPath,
+                            file: file
+                        };
+                    } else {
+                        // It's a folder
+                        if (!current.children[part]) {
+                            current.children[part] = {
+                                children: {},
+                                isFolder: true,
+                                name: part,
+                                path: '/' + currentPath
+                            };
+                        }
+                        current = current.children[part];
+                    }
+                }
+            });
+            
+            return root;
+        }
+        
+        // Render the file tree in the DOM
+        function renderFileTree(node, parentElement = null) {
+            const container = parentElement || document.getElementById('treeView');
+            const ul = document.createElement('ul');
+            ul.style.display = 'block';
+            ul.style.width = '100%';
+            
+            if (!parentElement) {
+                container.innerHTML = '';
+                container.appendChild(ul);
+            } else {
+                parentElement.appendChild(ul);
+            }
+            
+            // Sort: folders first, then files
+            const items = Object.values(node.children);
+            items.sort((a, b) => {
+                if (a.isFolder && !b.isFolder) return -1;
+                if (!a.isFolder && b.isFolder) return 1;
+                return a.name.localeCompare(b.name);
+            });
+            
+            items.forEach(item => {
+                const li = document.createElement('li');
+                li.className = 'tree-item';
+                
+                // Container for item content (icon, checkbox, label)
+                const itemContent = document.createElement('div');
+                itemContent.className = 'item-content';
+                
+                if (item.isFolder) {
+                    // Folder
+                    const toggleBtn = document.createElement('button');
+                    toggleBtn.className = 'toggle-btn';
+                    toggleBtn.innerHTML = '<small>▼</small>';
+                    toggleBtn.onclick = function(e) {
+                        e.stopPropagation();
+                        const sublist = li.querySelector('ul');
+                        if (sublist) {
+                            const isVisible = sublist.style.display !== 'none';
+                            sublist.style.display = isVisible ? 'none' : 'block';
+                            toggleBtn.innerHTML = isVisible ? '<small>►</small>' : '<small>▼</small>';
+                        }
+                    };
+                    
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.className = 'checkbox-wrapper';
+                    checkbox.dataset.path = item.path;
+                    checkbox.dataset.isFolder = 'true';
+                    const folderCbId = 'cb-' + (item.path || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+                    checkbox.id = folderCbId;
+                    checkbox.onchange = function() {
+                        // Check/uncheck all child items (only enabled)
+                        const checkboxes = li.querySelectorAll('input[type="checkbox"]');
+                        checkboxes.forEach(cb => {
+                            if (cb !== checkbox && !cb.disabled) {
+                                cb.checked = checkbox.checked;
+                                updateSelection(cb);
+                            }
+                        });
+                        updateSelection(checkbox);
+                    };
+                    
+                    const folderIcon = document.createElement('span');
+                    folderIcon.className = 'folder-icon';
+                    folderIcon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>';
+                    
+                    const label = document.createElement('label');
+                    label.textContent = item.name;
+                    label.htmlFor = folderCbId;
+                    
+                    // Add all elements to the content container
+                    itemContent.appendChild(toggleBtn);
+                    itemContent.appendChild(checkbox);
+                    itemContent.appendChild(folderIcon);
+                    itemContent.appendChild(label);
+                    
+                    // Add the content container to the li element
+                    li.appendChild(itemContent);
+                    ul.appendChild(li);
+                    
+                    // If the folder has children, render them
+                    if (Object.keys(item.children).length > 0) {
+                        renderFileTree(item, li);
+                    }
+                } else {
+                    // Archivo
+                    const spacer = document.createElement('span');
+                    spacer.className = 'toggle-btn';
+                    spacer.style.visibility = 'hidden';
+                    
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.className = 'checkbox-wrapper';
+                    checkbox.dataset.path = item.path;
+                    checkbox.dataset.isFolder = 'false';
+                    const fileCbId = 'cb-' + (item.path || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+                    checkbox.id = fileCbId;
+                    const isText = isTextFile(item.file);
+                    checkbox.disabled = !isText;
+                    checkbox.checked = isText && selectionOrder.includes(item.path);
+                    checkbox.onchange = function() {
+                        updateSelection(checkbox);
+                    };
+                    
+                    const fileIcon = document.createElement('span');
+                    fileIcon.className = 'file-icon';
+                    
+                    // Determine file type to show an appropriate icon
+                    const fileExt = item.name.split('.').pop().toLowerCase();
+                    if (['md', 'txt', 'doc', 'docx'].includes(fileExt)) {
+                        fileIcon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>';
+                    } else if (['jpg', 'jpeg', 'png', 'gif', 'svg'].includes(fileExt)) {
+                        fileIcon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>';
+                    } else if (['js', 'ts', 'html', 'css', 'py', 'java', 'cpp'].includes(fileExt)) {
+                        fileIcon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg>';
+                    } else {
+                        fileIcon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>';
+                    }
+                    
+                    const label = document.createElement('label');
+                    label.textContent = item.name;
+                    label.htmlFor = fileCbId;
+                    if (!isText) {
+                        label.title = 'Non-text file (not selectable)';
+                        label.style.opacity = '0.6';
+                        label.setAttribute('aria-disabled', 'true');
+                    }
+                    
+                    // Add all elements to the content container
+                    itemContent.appendChild(spacer);
+                    itemContent.appendChild(checkbox);
+                    itemContent.appendChild(fileIcon);
+                    itemContent.appendChild(label);
+                    
+                    // Add the content container to the li element
+                    li.appendChild(itemContent);
+                    ul.appendChild(li);
+                }
+            });
+        }
+        
+        // Handle file selection/deselection
+        function updateSelection(checkbox) {
+            const path = checkbox.dataset.path;
+            const isFolder = checkbox.dataset.isFolder === 'true';
+            
+            if (isFolder) {
+                // Do nothing specific for folders here; individual files update separately
+            } else {
+                // It's a file
+                if (checkbox.checked) {
+                    // Add to selection if not already present
+                    if (!selectionOrder.includes(path)) {
+                        selectionOrder.push(path);
+                    }
+                } else {
+                    // Remove from selection
+                    const index = selectionOrder.indexOf(path);
+                    if (index > -1) {
+                        selectionOrder.splice(index, 1);
+                    }
+                }
+            }
+        }
+        
+        // Utility: read a File as text and return a Promise
+        function readFileAsText(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = e => resolve(e.target && typeof e.target.result === 'string' ? e.target.result : '');
+                reader.onerror = err => reject(err);
+                reader.onabort = () => reject(new Error('Read cancelled'));
+                const encodingSelect = document.getElementById('encodingSelect');
+                const selectedEncoding = encodingSelect && encodingSelect.value ? encodingSelect.value : 'utf-8';
+                reader.readAsText(file, selectedEncoding);
+            });
+        }
+
+        let dropZone = document.getElementById('drop_zone');
+        dropZone.addEventListener('drop', handleDrop, false);
+        dropZone.addEventListener('dragover', handleDragOver, false);
+        dropZone.addEventListener('dragleave', handleDragLeave, false);
+
+        let copyButton = document.getElementById('copyButton');
+        copyButton.addEventListener('click', async () => {
+            await copyToClipboard();
+        });
+        
+        let addFolderButton = document.getElementById('addFolderButton');
+        addFolderButton.addEventListener('click', selectFolder);
+        const hideToggle = document.getElementById('hideBinaryToggle');
+        if (hideToggle) hideToggle.addEventListener('change', () => {
+            if (!currentFolderFiles.length) return;
+            const tree = buildFileTree(getFilteredFolderFiles());
+            renderFileTree(tree);
+        });
+
+        // Persist encoding preference
+        const encSel = document.getElementById('encodingSelect');
+        if (encSel) {
+            const savedEnc = localStorage.getItem('encoding');
+            if (savedEnc && Array.from(encSel.options).some(o => o.value === savedEnc)) {
+                encSel.value = savedEnc;
+            }
+            encSel.addEventListener('change', () => {
+                try { localStorage.setItem('encoding', encSel.value); } catch (_) {}
+            });
+        }
+    </script>
+</body>
+</html>
