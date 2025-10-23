@@ -653,6 +653,31 @@
             return root;
         }
         
+        // Update folder checkbox state based on its children's state
+        function updateFolderCheckboxState(folderCheckbox, folderElement) {
+            const childCheckboxes = Array.from(folderElement.querySelectorAll('input[type="checkbox"]'))
+                .filter(cb => cb !== folderCheckbox && cb.dataset.isFolder === 'false' && !cb.disabled);
+
+            if (childCheckboxes.length === 0) {
+                folderCheckbox.checked = false;
+                folderCheckbox.indeterminate = false;
+                return;
+            }
+
+            const checkedCount = childCheckboxes.filter(cb => cb.checked).length;
+
+            if (checkedCount === 0) {
+                folderCheckbox.checked = false;
+                folderCheckbox.indeterminate = false;
+            } else if (checkedCount === childCheckboxes.length) {
+                folderCheckbox.checked = true;
+                folderCheckbox.indeterminate = false;
+            } else {
+                folderCheckbox.checked = false;
+                folderCheckbox.indeterminate = true;
+            }
+        }
+
         // Render the file tree in the DOM
         function renderFileTree(node, parentElement = null) {
             const container = parentElement || document.getElementById('treeView');
@@ -738,9 +763,11 @@
                     // If the folder has children, render them
                     if (Object.keys(item.children).length > 0) {
                         renderFileTree(item, li);
+                        // Update folder checkbox state based on children
+                        updateFolderCheckboxState(checkbox, li);
                     }
                 } else {
-                    // Archivo
+                    // File
                     const spacer = document.createElement('span');
                     spacer.className = 'toggle-btn';
                     spacer.style.visibility = 'hidden';
@@ -800,7 +827,7 @@
         function updateSelection(checkbox) {
             const path = checkbox.dataset.path;
             const isFolder = checkbox.dataset.isFolder === 'true';
-            
+
             if (isFolder) {
                 // Do nothing specific for folders here; individual files update separately
             } else {
@@ -815,6 +842,21 @@
                     const index = selectionOrder.indexOf(path);
                     if (index > -1) {
                         selectionOrder.splice(index, 1);
+                    }
+                }
+
+                // Update parent folder checkbox state
+                const treeItem = checkbox.closest('.tree-item');
+                if (treeItem) {
+                    const parentUl = treeItem.parentElement;
+                    if (parentUl && parentUl.tagName === 'UL') {
+                        const parentLi = parentUl.parentElement;
+                        if (parentLi && parentLi.classList.contains('tree-item')) {
+                            const parentCheckbox = parentLi.querySelector('input[type="checkbox"][data-is-folder="true"]');
+                            if (parentCheckbox) {
+                                updateFolderCheckboxState(parentCheckbox, parentLi);
+                            }
+                        }
                     }
                 }
             }
