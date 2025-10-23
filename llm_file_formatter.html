@@ -582,20 +582,19 @@
                 validateFiles(textFiles, true);
 
                 // Reset selection and index
-                selectedFiles = [];
                 selectionOrder = [];
                 fileMap = new Map();
                 currentFolderFiles = files;
 
-                // Create tree structure
-                const tree = buildFileTree(getFilteredFolderFiles());
-                renderFileTree(tree);
-
-                // Index files by path for on-demand reading
+                // Index files by path BEFORE rendering tree to avoid race conditions
                 for (const file of files) {
                     const path = '/' + (file.webkitRelativePath || file.name);
                     fileMap.set(path, file);
                 }
+
+                // Create tree structure
+                const tree = buildFileTree(getFilteredFolderFiles());
+                renderFileTree(tree);
 
                 setLoading(false);
                 showStatus('Folder loaded. Select files and click "Copy".', 'success');
