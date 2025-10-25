@@ -889,6 +889,15 @@
         const hideToggle = document.getElementById('hideBinaryToggle');
         if (hideToggle) hideToggle.addEventListener('change', () => {
             if (!currentFolderFiles.length) return;
+
+            // Clean selectionOrder of binary files when hiding them
+            if (hideToggle.checked) {
+                selectionOrder = selectionOrder.filter(path => {
+                    const file = fileMap.get(path);
+                    return file && isTextFile(file);
+                });
+            }
+
             const tree = buildFileTree(getFilteredFolderFiles());
             renderFileTree(tree);
         });
