@@ -42,6 +42,21 @@
             color: #7f8c8d;
         }
 
+        #fileCounter {
+            display: none;
+            margin-top: 10px;
+            padding: 8px 16px;
+            background-color: #3498db;
+            color: white;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: bold;
+        }
+
+        #fileCounter.visible {
+            display: inline-block;
+        }
+
         #output {
             margin-top: 20px;
             padding: 20px;
@@ -57,8 +72,8 @@
 
         .button {
             display: inline-block;
-            width: calc(50% - 10px);
-            margin: 20px 5px;
+            flex: 1;
+            margin: 20px 0;
             padding: 15px 20px;
             color: white;
             border: none;
@@ -214,6 +229,15 @@
         .button-container {
             display: flex;
             justify-content: space-between;
+            gap: 10px;
+        }
+
+        #clearButton {
+            background-color: #e74c3c;
+        }
+
+        #clearButton:hover {
+            background-color: #c0392b;
         }
 
         @keyframes pulse {
@@ -231,6 +255,7 @@
     <h1>LLM File Formatter</h1>
     <div id="drop_zone">
         <p>Drag and drop files here</p>
+        <span id="fileCounter" class="">0 files accumulated</span>
     </div>
     <div class="file-tree" id="fileTree">
         <div class="tree-view" id="treeView"></div>
@@ -238,6 +263,7 @@
     <div class="button-container">
         <button id="addFolderButton" class="button">Add folder</button>
         <button id="copyButton" class="button">Copy to clipboard</button>
+        <button id="clearButton" class="button">Clear All</button>
     </div>
     <label style="display:flex;align-items:center;gap:6px;margin-top:4px;font-size:14px;">
         <input type="checkbox" id="hideBinaryToggle"> Hide binaries
@@ -266,6 +292,23 @@
         // Index files by path to avoid storing contents in memory
         let fileMap = new Map();
         let currentFolderFiles = [];
+
+        // Accumulated files from drag & drop operations
+        let accumulatedFiles = new Map(); // Key: unique identifier, Value: file object
+
+        // Update file counter display
+        function updateFileCounter() {
+            const counter = document.getElementById('fileCounter');
+            if (!counter) return;
+
+            const count = accumulatedFiles.size;
+            if (count > 0) {
+                counter.textContent = `${count} file${count !== 1 ? 's' : ''} accumulated`;
+                counter.classList.add('visible');
+            } else {
+                counter.classList.remove('visible');
+            }
+        }
 
         function setLoading(loading) {
             filesLoading = loading;
@@ -348,7 +391,86 @@
             return LANG_MAP[t] || t;
         }
 
-        function handleDrop(e) {
+        // Generate unique identifier for a file
+        function getFileId(file) {
+            // Use name, size, and lastModified to create a unique ID
+            return `${file.name}-${file.size}-${file.lastModified}`;
+        }
+
+        // Render all accumulated files
+        async function renderAllFiles() {
+            const output = document.getElementById('output');
+            output.innerHTML = '';
+
+            if (accumulatedFiles.size === 0) {
+                return;
+            }
+
+            const results = [];
+            let omittedLarge = 0;
+            const encodingSelect = document.getElementById('encodingSelect');
+            const selectedEncoding = encodingSelect && encodingSelect.value ? encodingSelect.value : 'utf-8';
+
+            for (const [fileId, file] of accumulatedFiles) {
+                if (file.size > MAX_FILE_SIZE) {
+                    console.warn(`Skipped very large file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
+                    omittedLarge++;
+                    continue;
+                }
+
+                try {
+                    const contentRaw = await readFileAsText(file);
+                    let content = contentRaw || '';
+                    if (content.length > MAX_CONTENT_LENGTH) {
+                        content = content.substring(0, MAX_CONTENT_LENGTH) + '\n[... content truncated ...]';
+                    }
+                    const parts = file.name.split('.');
+                    const extRaw = parts.length > 1 ? parts.pop().toLowerCase() : '';
+                    const fileExtension = mapLangTag(extRaw);
+                    const fence = getSafeFence(content);
+                    const safeName = escapeHtml(file.name);
+                    results.push('Filename: ' + safeName + '\n' + fence + fileExtension + '\n' + escapeHtml(content) + '\n' + fence + '\n\n');
+                } catch (err) {
+                    console.error(`Error reading file ${file.name}:`, err);
+                }
+            }
+
+            output.innerHTML = results.join('');
+
+            const msg = omittedLarge > 0
+                ? `${accumulatedFiles.size} files ready. Skipped ${omittedLarge} large file(s). Click "Copy".`
+                : `${accumulatedFiles.size} files ready. Click "Copy".`;
+            showStatus(msg, 'success');
+        }
+
+        // Clear all accumulated files
+        function clearAll() {
+            // Clear accumulated files from drag & drop
+            accumulatedFiles.clear();
+
+            // Clear folder selection
+            selectedFiles = [];
+            selectionOrder = [];
+            fileMap.clear();
+            currentFolderFiles = [];
+
+            // Clear UI
+            const output = document.getElementById('output');
+            output.innerHTML = '';
+
+            const fileTree = document.getElementById('fileTree');
+            fileTree.style.display = 'none';
+
+            const treeView = document.getElementById('treeView');
+            treeView.innerHTML = '';
+
+            // Update file counter
+            updateFileCounter();
+
+            showStatus('All files cleared', 'success');
+        }
+
+        async function handleDrop(e) {
             e.preventDefault();
             e.stopPropagation();
             // Clear drag visual state
@@ -359,82 +481,57 @@
             const allFiles = Array.from(e.dataTransfer.files || []);
             const textFiles = allFiles.filter(isTextFile);
 
-            // Validate before processing (on text files)
-            if (!validateFiles(textFiles)) return;
-            const skipped = allFiles.length - textFiles.length;
-
-            let output = document.getElementById('output');
-            output.innerHTML = '';
-
-            if (skipped > 0) {
-                console.warn(`Skipped ${skipped} binary file(s) on drop`);
-                showStatus(`Skipped ${skipped} non-text file(s)`, 'success');
-            }
+            const skippedBinary = allFiles.length - textFiles.length;
 
             if (textFiles.length === 0) {
-                // Nothing to process
+                if (skippedBinary > 0) {
+                    showStatus(`Skipped ${skippedBinary} non-text file(s)`, 'error');
+                }
                 return;
             }
 
-            let processedFiles = 0;
-            const totalFiles = textFiles.length;
-            let hadErrors = false;
-            let omittedLarge = 0;
-            const results = new Array(totalFiles);
-
-            function finalize() {
-                output.innerHTML = results.join('');
-                const msg = omittedLarge > 0
-                  ? `Files prepared. Skipped ${omittedLarge} large file(s). Click "Copy".`
-                  : 'Files prepared. Click "Copy".';
-                showStatus(msg, hadErrors ? 'error' : 'success');
+            // Check total accumulated files don't exceed limits
+            const potentialTotal = accumulatedFiles.size + textFiles.length;
+            if (potentialTotal > MAX_FILES) {
+                showStatus(`Cannot add files. Would exceed limit of ${MAX_FILES} files.`, 'error');
+                return;
             }
 
-            const encodingSelect = document.getElementById('encodingSelect');
-            const selectedEncoding = encodingSelect && encodingSelect.value ? encodingSelect.value : 'utf-8';
-            for (let i = 0; i < textFiles.length; i++) {
-                const file = textFiles[i];
+            // Add files to accumulated collection
+            let addedCount = 0;
+            let duplicateCount = 0;
 
-                if (file.size > MAX_FILE_SIZE) {
-                    console.warn(`Skipped very large file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
-                    omittedLarge++;
-                    results[i] = '';
-                    processedFiles++;
-                    if (processedFiles === totalFiles) finalize();
-                    continue;
+            for (const file of textFiles) {
+                const fileId = getFileId(file);
+                if (accumulatedFiles.has(fileId)) {
+                    duplicateCount++;
+                } else {
+                    accumulatedFiles.set(fileId, file);
+                    addedCount++;
                 }
-
-                const reader = new FileReader();
-                reader.onload = function(e) {
-                    let content = e.target.result || '';
-                    if (content.length > MAX_CONTENT_LENGTH) {
-                        content = content.substring(0, MAX_CONTENT_LENGTH) + '\n[... content truncated ...]';
-                    }
-                    const parts = file.name.split('.');
-                    const extRaw = parts.length > 1 ? parts.pop().toLowerCase() : '';
-                    const fileExtension = mapLangTag(extRaw);
-                    const fence = getSafeFence(content);
-                    const safeName = escapeHtml(file.name);
-                    results[i] = 'Filename: ' + safeName + '\n' + fence + fileExtension + '\n' + escapeHtml(content) + '\n' + fence + '\n\n';
-                    processedFiles++;
-                    if (processedFiles === totalFiles) finalize();
-                };
-                reader.onerror = function(e) {
-                    console.error(`Error reading file ${file.name}:`, e);
-                    hadErrors = true;
-                    results[i] = '';
-                    processedFiles++;
-                    if (processedFiles === totalFiles) finalize();
-                };
-                reader.onabort = function() {
-                    console.warn(`Read cancelled for ${file.name}`);
-                    hadErrors = true;
-                    results[i] = '';
-                    processedFiles++;
-                    if (processedFiles === totalFiles) finalize();
-                };
-                reader.readAsText(file, selectedEncoding);
             }
+
+            // Render all accumulated files
+            await renderAllFiles();
+
+            // Update file counter display
+            updateFileCounter();
+
+            // Show status message
+            let statusMsg = '';
+            if (addedCount > 0 && duplicateCount > 0 && skippedBinary > 0) {
+                statusMsg = `Added ${addedCount} file(s). ${duplicateCount} duplicate(s) and ${skippedBinary} binary file(s) skipped. Total: ${accumulatedFiles.size}`;
+            } else if (addedCount > 0 && duplicateCount > 0) {
+                statusMsg = `Added ${addedCount} file(s). ${duplicateCount} duplicate(s) skipped. Total: ${accumulatedFiles.size}`;
+            } else if (addedCount > 0 && skippedBinary > 0) {
+                statusMsg = `Added ${addedCount} file(s). ${skippedBinary} binary file(s) skipped. Total: ${accumulatedFiles.size}`;
+            } else if (addedCount > 0) {
+                statusMsg = `Added ${addedCount} file(s). Total: ${accumulatedFiles.size}`;
+            } else if (duplicateCount > 0) {
+                statusMsg = `${duplicateCount} duplicate file(s) skipped. Total: ${accumulatedFiles.size}`;
+            }
+
+            showStatus(statusMsg, 'success');
         }
 
         function handleDragOver(e) {
@@ -451,9 +548,36 @@
             const output = document.getElementById('output');
             let textToCopy = '';
 
+            // Build combined content from both accumulated files and folder selection
+            const partsOut = [];
+
+            // First, add accumulated files from drag & drop
+            if (accumulatedFiles.size > 0) {
+                for (const [fileId, file] of accumulatedFiles) {
+                    if (file.size > MAX_FILE_SIZE) {
+                        console.warn(`Skipped very large file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
+                        continue;
+                    }
+                    try {
+                        const contentRaw = await readFileAsText(file);
+                        let content = contentRaw || '';
+                        if (content.length > MAX_CONTENT_LENGTH) {
+                            content = content.substring(0, MAX_CONTENT_LENGTH) + '\n[... content truncated ...]';
+                        }
+                        const parts = file.name.split('.');
+                        const extRaw = parts.length > 1 ? parts.pop().toLowerCase() : '';
+                        const fileExtension = mapLangTag(extRaw);
+                        const fence = getSafeFence(content);
+                        const safeName = escapeHtml(file.name);
+                        partsOut.push('Filename: ' + safeName + '\n' + fence + fileExtension + '\n' + escapeHtml(content) + '\n' + fence + '\n\n');
+                    } catch (err) {
+                        console.error(`Error reading file ${file.name}:`, err);
+                    }
+                }
+            }
+
+            // Then, add selected files from folder tree
             if (selectionOrder.length > 0) {
-                // Build content by reading on-demand only selected files
-                const partsOut = [];
                 for (const filePath of selectionOrder) {
                     const file = fileMap.get(filePath);
                     if (!file) continue;
@@ -479,11 +603,16 @@
                         showStatus(`Error reading ${file.name}`, 'error');
                     }
                 }
+            }
+
+            // If we have content to copy
+            if (partsOut.length > 0) {
                 textToCopy = partsOut.join('');
                 output.innerHTML = textToCopy;
                 // Copy visible text (without HTML entities)
                 textToCopy = output.innerText || output.textContent || '';
             } else {
+                // Fallback to current output content
                 textToCopy = output.innerText || output.textContent || '';
             }
 
@@ -846,6 +975,10 @@
         
         let addFolderButton = document.getElementById('addFolderButton');
         addFolderButton.addEventListener('click', selectFolder);
+
+        let clearButton = document.getElementById('clearButton');
+        clearButton.addEventListener('click', clearAll);
+
         const hideToggle = document.getElementById('hideBinaryToggle');
         if (hideToggle) hideToggle.addEventListener('change', () => {
             if (!currentFolderFiles.length) return;
