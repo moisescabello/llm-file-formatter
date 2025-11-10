@@ -12,12 +12,14 @@ Live demo: https://moisescabello.github.io/llm-file-formatter/
 
 ## Features
 
-- Drag & Drop: Drop files directly onto the page
-- Folder Selection: Select entire folders with a tree view and checkboxes
-- Smart Text Filtering: Ignores non‑text files, optional “Hide binaries” toggle
-- Automatic Formatting: Wraps content in code fences with a language tag inferred from file extension
-- Clipboard: Copies the prepared, escaped text to your clipboard
-- Encoding: Choose between UTF‑8 and Windows‑1252 (ISO‑8859‑1) when reading files
+- **Cumulative Drag & Drop**: Drop files multiple times to build up a collection – duplicates are automatically detected and skipped
+- **File Counter**: Visual badge shows how many files are accumulated in real‑time
+- **Clear All**: Reset everything and start over with one click
+- **Folder Selection**: Select entire folders with a tree view and checkboxes
+- **Smart Text Filtering**: Ignores non‑text files, optional "Hide binaries" toggle
+- **Automatic Formatting**: Wraps content in code fences with a language tag inferred from file extension
+- **Clipboard**: Copies the prepared, escaped text to your clipboard
+- **Encoding**: Choose between UTF‑8 and Windows‑1252 (ISO‑8859‑1) when reading files
 
 ## How It Works
 
@@ -36,16 +38,18 @@ Live demo: https://moisescabello.github.io/llm-file-formatter/
 
 1. Open `llm_file_formatter.html` in your browser (double‑click the file).
 2. Add files via either option:
-   - Drag and drop files onto the drop area, or
-   - Click “Add folder” to select a directory (tree with checkboxes appears).
+   - **Drag and drop files** onto the drop area (you can drag multiple times to accumulate files), or
+   - Click **"Add folder"** to select a directory (tree with checkboxes appears).
 3. Optional tweaks:
-   - Toggle “Hide binaries” to filter out non‑text files in the tree.
-   - Pick the appropriate “Encoding” before reading/copying.
-4. Click “Copy to clipboard” to copy the formatted output.
+   - Toggle "Hide binaries" to filter out non‑text files in the tree.
+   - Pick the appropriate "Encoding" before reading/copying.
+4. Click **"Copy to clipboard"** to copy the formatted output.
+5. Use **"Clear All"** to reset and start over.
 
-Tip: When a folder is selected, you can choose specific files in the tree; the copy action will include only those selected files and preserve your selection order.
-
-If you prefer a single click, you can also use the drag & drop area without selecting a folder.
+**Tips:**
+- **Cumulative workflow**: Drag files multiple times to build a collection. The file counter badge shows your total. Duplicates are automatically skipped.
+- **Combined sources**: You can mix drag‑and‑drop files with folder selections – both will be included when you copy.
+- When a folder is selected, you can choose specific files in the tree; the copy action will include only those selected files and preserve your selection order.
 
 ## Limits & Notes
 
