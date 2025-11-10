@@ -28,3 +28,10 @@ This is a standalone HTML file application that formats files for sharing with L
 - Tree view allows checkbox selection of individual files or entire folders
 - Output format includes filename and code block with file extension for syntax highlighting
 - Code should be as efficient and lean as possible (avoid unnecessary complexity, minimize memory usage, and prefer simple, performant solutions)
+
+## Git and GitHub Conventions
+
+- **No emojis in GitHub**: Do not use emojis in commit messages, release notes, or pull requests
+- Keep commit messages clear and professional
+- Use conventional commit format when appropriate (feat:, fix:, docs:, etc.)
+- Release notes should be clean and technical without decorative elements
