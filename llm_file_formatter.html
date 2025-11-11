@@ -490,8 +490,9 @@
         // Accumulated files from drag & drop operations
         let accumulatedFiles = new Map(); // Key: unique identifier, Value: file object
 
-        // File content cache to avoid duplicate reads
+        // File content cache to avoid duplicate reads with size limit
         const fileContentCache = new Map(); // Key: file ID, Value: content
+        const MAX_CACHE_SIZE = 50; // Maximum number of files to keep in cache
 
         // Token limits for different models
         const TOKEN_LIMITS = {
@@ -501,38 +502,58 @@
             '1m': 1000000
         };
 
+        // Helper function to process a single file and return its metrics
+        async function processFileMetrics(file) {
+            if (file.size > FILE_LIMITS.MAX_FILE_SIZE) {
+                return { bytes: 0, characters: 0, error: false };
+            }
+
+            const bytes = file.size;
+            let characters = 0;
+            let error = false;
+
+            try {
+                const content = await readFileCached(file);
+                characters = content.length;
+            } catch (err) {
+                console.error(`Error reading file ${file.name}:`, err);
+                error = true;
+                // Estimate characters based on file size if read fails
+                // Rough approximation: 1 byte ≈ 1 character for text files
+                characters = Math.min(file.size, FILE_LIMITS.MAX_CONTENT_LENGTH);
+            }
+
+            return { bytes, characters, error };
+        }
+
         // Calculate metrics for all accumulated and selected files
         async function calculateMetrics() {
             let totalBytes = 0;
             let totalCharacters = 0;
+            let errorCount = 0;
 
             // Process accumulated files from drag & drop
             for (const [fileId, file] of accumulatedFiles) {
-                if (file.size > FILE_LIMITS.MAX_FILE_SIZE) continue;
-
-                totalBytes += file.size;
-
-                try {
-                    const content = await readFileCached(file);
-                    totalCharacters += content.length;
-                } catch (err) {
-                    showStatus(`Error reading file ${file.name}: ${err.message}`, 'error');
-                }
+                const result = await processFileMetrics(file);
+                totalBytes += result.bytes;
+                totalCharacters += result.characters;
+                if (result.error) errorCount++;
             }
 
             // Process selected files from folder tree
             for (const filePath of selectionOrder) {
                 const file = fileMap.get(filePath);
-                if (!file || !isTextFile(file) || file.size > FILE_LIMITS.MAX_FILE_SIZE) continue;
+                if (!file || !isTextFile(file)) continue;
 
-                totalBytes += file.size;
+                const result = await processFileMetrics(file);
+                totalBytes += result.bytes;
+                totalCharacters += result.characters;
+                if (result.error) errorCount++;
+            }
 
-                try {
-                    const content = await readFileCached(file);
-                    totalCharacters += content.length;
-                } catch (err) {
-                    showStatus(`Error reading file ${file.name}: ${err.message}`, 'error');
-                }
+            // Show error summary if there were errors
+            if (errorCount > 0) {
+                console.warn(`Failed to read ${errorCount} file(s). Token count is estimated.`);
             }
 
             // Estimate tokens (rough approximation: 1 token ≈ 4 characters)
@@ -541,7 +562,8 @@
             return {
                 bytes: totalBytes,
                 characters: totalCharacters,
-                tokens: estimatedTokens
+                tokens: estimatedTokens,
+                errors: errorCount
             };
         }
 
@@ -590,6 +612,22 @@
             '500k': 0,
             '1m': 0
         };
+
+        // Debounce timer for metrics updates
+        let metricsUpdateTimer = null;
+
+        // Debounced version of updateMetricsPanel to avoid excessive updates
+        async function updateMetricsPanelDebounced() {
+            // Clear any existing timer
+            if (metricsUpdateTimer) {
+                clearTimeout(metricsUpdateTimer);
+            }
+
+            // Set a new timer to update after 300ms of inactivity
+            metricsUpdateTimer = setTimeout(async () => {
+                await updateMetricsPanel();
+            }, 300);
+        }
 
         // Update individual progress bar
         function updateProgressBar(limitKey, currentTokens, maxTokens) {
@@ -675,24 +713,30 @@
         // When warnOnly=true, shows warning but doesn't block operation
         function validateFiles(files, warnOnly = false) {
             const count = files.length;
-            let isValid = true;
+            let hasCountError = false;
+            let hasSizeError = false;
 
             if (count > FILE_LIMITS.MAX_FILES) {
-                showStatus(`Warning: Too many files (max ${FILE_LIMITS.MAX_FILES}). Some files may be skipped.`, warnOnly ? 'error' : 'error');
-                isValid = false;
+                const message = warnOnly
+                    ? `Warning: Too many files (max ${FILE_LIMITS.MAX_FILES}). Some files may be skipped.`
+                    : `Error: Cannot process ${count} files. Maximum is ${FILE_LIMITS.MAX_FILES} files.`;
+                showStatus(message, 'error');
+                hasCountError = true;
             }
 
             let totalSize = 0;
             for (const f of files) totalSize += f.size || 0;
             if (totalSize > FILE_LIMITS.MAX_TOTAL_SIZE) {
                 const lim = (FILE_LIMITS.MAX_TOTAL_SIZE / 1024 / 1024).toFixed(0);
-                showStatus(`Warning: Total size exceeds limit (${lim}MB). Some files may be skipped.`, warnOnly ? 'error' : 'error');
-                isValid = false;
+                const message = warnOnly
+                    ? `Warning: Total size exceeds limit (${lim}MB). Some files may be skipped.`
+                    : `Error: Total size (${(totalSize / 1024 / 1024).toFixed(0)}MB) exceeds ${lim}MB limit.`;
+                showStatus(message, 'error');
+                hasSizeError = true;
             }
 
-            // If warnOnly is true, we return true despite validation failure (allowing operation to continue)
-            // If warnOnly is false, we return the actual validation result
-            return warnOnly ? true : isValid;
+            // Return false if any validation failed
+            return !(hasCountError || hasSizeError);
         }
 
         // Sanitize the language tag for the code fence
@@ -733,22 +777,60 @@
             return `${file.name}-${file.size}-${file.lastModified}`;
         }
 
+        // Generate a more robust unique ID for DOM elements
+        function generateUniqueElementId(path, prefix = 'cb') {
+            // Use a better hash function to reduce collisions
+            let hash = 0;
+            const str = path || '';
+            for (let i = 0; i < str.length; i++) {
+                const char = str.charCodeAt(i);
+                hash = ((hash << 5) - hash) + char;
+                hash = hash & hash; // Convert to 32-bit integer
+            }
+            // Add timestamp component to ensure uniqueness
+            const timestamp = Date.now().toString(36).slice(-4);
+            // Add random component for extra safety
+            const random = Math.random().toString(36).slice(-4);
+            // Convert to base36 and combine components
+            return `${prefix}-${Math.abs(hash).toString(36)}-${timestamp}-${random}`;
+        }
+
         // Read file with caching to avoid duplicate reads
         async function readFileCached(file) {
-            const fileId = getFileId(file);
+            const encodingSelect = document.getElementById('encodingSelect');
+            const selectedEncoding = encodingSelect && encodingSelect.value ? encodingSelect.value : 'utf-8';
+            const fileId = getFileId(file) + '-' + selectedEncoding;
 
-            // Check cache first
+            // Check cache first (including cached errors)
             if (fileContentCache.has(fileId)) {
-                return fileContentCache.get(fileId);
+                const cached = fileContentCache.get(fileId);
+                // If it's a cached error, throw it again
+                if (cached instanceof Error) {
+                    throw cached;
+                }
+                return cached;
             }
 
-            // Read file and cache the result
+            // Read file and cache the result with size limit
             try {
                 const content = await readFileAsText(file);
+
+                // Implement cache size limit - remove oldest entry if at limit
+                if (fileContentCache.size >= MAX_CACHE_SIZE) {
+                    const firstKey = fileContentCache.keys().next().value;
+                    fileContentCache.delete(firstKey);
+                }
+
                 fileContentCache.set(fileId, content);
                 return content;
             } catch (err) {
                 console.error(`Error reading file ${file.name}:`, err);
+                // Cache the error to avoid repeated failed attempts
+                if (fileContentCache.size >= MAX_CACHE_SIZE) {
+                    const firstKey = fileContentCache.keys().next().value;
+                    fileContentCache.delete(firstKey);
+                }
+                fileContentCache.set(fileId, err);
                 throw err;
             }
         }
@@ -768,8 +850,7 @@
             const results = [];
             let omittedLarge = 0;
             let totalFiles = 0;
-            const encodingSelect = document.getElementById('encodingSelect');
-            const selectedEncoding = encodingSelect && encodingSelect.value ? encodingSelect.value : 'utf-8';
+            let errorFiles = 0;
 
             // Process accumulated files from drag & drop
             for (const [fileId, file] of accumulatedFiles) {
@@ -796,7 +877,11 @@
                     results.push('Filename: ' + safeName + '\n' + fence + fileExtension + '\n' + content + '\n' + fence + '\n\n');
                     totalFiles++;
                 } catch (err) {
-                    showStatus(`Error reading file ${file.name}: ${err.message}`, 'error');
+                    console.error(`Error reading file ${file.name}:`, err);
+                    errorFiles++;
+                    // Add placeholder for errored file
+                    const safeName = escapeHtml(file.name);
+                    results.push('Filename: ' + safeName + '\n```\n[Error reading file: ' + escapeHtml(err.message) + ']\n```\n\n');
                 }
             }
 
@@ -828,16 +913,27 @@
                     results.push('Filename: ' + safeName + '\n' + fence + fileExtension + '\n' + content + '\n' + fence + '\n\n');
                     totalFiles++;
                 } catch (err) {
-                    showStatus(`Error reading file ${file.name}: ${err.message}`, 'error');
+                    console.error(`Error reading file ${file.name}:`, err);
+                    errorFiles++;
+                    // Add placeholder for errored file
+                    const safeName = escapeHtml(file.name);
+                    results.push('Filename: ' + safeName + '\n```\n[Error reading file: ' + escapeHtml(err.message) + ']\n```\n\n');
                 }
             }
 
             output.innerHTML = results.join('');
 
-            const msg = omittedLarge > 0
-                ? `${totalFiles} files ready. Skipped ${omittedLarge} large file(s). Click "Copy".`
-                : `${totalFiles} files ready. Click "Copy".`;
-            showStatus(msg, 'success');
+            // Build status message with all relevant information
+            let msg = `${totalFiles} file${totalFiles !== 1 ? 's' : ''} ready.`;
+            if (omittedLarge > 0 || errorFiles > 0) {
+                const issues = [];
+                if (omittedLarge > 0) issues.push(`${omittedLarge} large`);
+                if (errorFiles > 0) issues.push(`${errorFiles} with errors`);
+                msg += ` Skipped: ${issues.join(', ')}.`;
+            }
+            msg += ' Click "Copy".';
+
+            showStatus(msg, errorFiles > 0 ? 'error' : 'success');
 
             // Update metrics panel
             updateMetricsPanel();
@@ -856,6 +952,12 @@
             selectionOrder = [];
             fileMap.clear();
             currentFolderFiles = [];
+
+            // Clear debounce timer to prevent memory leak
+            if (metricsUpdateTimer) {
+                clearTimeout(metricsUpdateTimer);
+                metricsUpdateTimer = null;
+            }
 
             // Clear UI
             const output = document.getElementById('output');
@@ -961,7 +1063,16 @@
         }
 
         function handleDragLeave(e) {
-            document.getElementById('drop_zone').classList.remove('drag-over');
+            // Only remove style if we're actually leaving the drop zone, not entering a child element
+            const dropZone = document.getElementById('drop_zone');
+            const rect = dropZone.getBoundingClientRect();
+            const x = e.clientX;
+            const y = e.clientY;
+
+            // Check if the mouse is outside the drop zone boundaries
+            if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) {
+                dropZone.classList.remove('drag-over');
+            }
         }
 
         async function copyToClipboard() {
@@ -1079,8 +1190,13 @@
                 const files = Array.from(e.target.files);
                 const textFiles = files.filter(isTextFile);
 
-                // Validate but allow to continue for large selections (warn only)
-                validateFiles(textFiles, true);
+                // Validate files strictly - prevent loading if limits exceeded
+                const isValid = validateFiles(textFiles, false);
+                if (!isValid) {
+                    // Clear the file tree if validation fails
+                    fileTree.style.display = 'none';
+                    return;
+                }
 
                 // Clear previous references completely to prevent memory leaks
                 selectedFiles = [];
@@ -1212,8 +1328,8 @@
                     checkbox.className = 'checkbox-wrapper';
                     checkbox.dataset.path = item.path;
                     checkbox.dataset.isFolder = 'true';
-                    // Use a hash function for unique IDs
-                    const folderCbId = 'cb-folder-' + btoa(item.path || '').replace(/[^a-zA-Z0-9]/g, '').substr(0, 16);
+                    // Use robust hash function for unique IDs
+                    const folderCbId = generateUniqueElementId(item.path, 'cb-folder');
                     checkbox.id = folderCbId;
                     checkbox.onchange = async function() {
                         // Check/uncheck all child items (only enabled)
@@ -1226,8 +1342,8 @@
                         });
                         updateSelection(checkbox, true); // Skip individual metrics update
 
-                        // Update metrics once after all selections are done
-                        await updateMetricsPanel();
+                        // Update metrics with debounce for better performance
+                        await updateMetricsPanelDebounced();
                     };
                     
                     const folderIcon = document.createElement('span');
@@ -1263,16 +1379,16 @@
                     checkbox.className = 'checkbox-wrapper';
                     checkbox.dataset.path = item.path;
                     checkbox.dataset.isFolder = 'false';
-                    // Use a hash function for unique IDs
-                    const fileCbId = 'cb-file-' + btoa(item.path || '').replace(/[^a-zA-Z0-9]/g, '').substr(0, 16);
+                    // Use robust hash function for unique IDs
+                    const fileCbId = generateUniqueElementId(item.path, 'cb-file');
                     checkbox.id = fileCbId;
                     const isText = isTextFile(item.file);
                     checkbox.disabled = !isText;
                     checkbox.checked = isText && selectionOrder.includes(item.path);
                     checkbox.onchange = async function() {
                         updateSelection(checkbox, true); // Skip metrics update in updateSelection
-                        // Update metrics after file selection changes
-                        await updateMetricsPanel();
+                        // Update metrics with debounce for better performance
+                        await updateMetricsPanelDebounced();
                     };
                     
                     const fileIcon = document.createElement('span');
@@ -1337,7 +1453,7 @@
 
             // Update metrics panel when selection changes (unless told to skip)
             if (!skipMetricsUpdate) {
-                updateMetricsPanel();
+                updateMetricsPanelDebounced();
             }
         }
         
@@ -1386,10 +1502,32 @@
             if (savedEnc && Array.from(encSel.options).some(o => o.value === savedEnc)) {
                 encSel.value = savedEnc;
             }
-            encSel.addEventListener('change', () => {
+            encSel.addEventListener('change', async () => {
                 try { localStorage.setItem('encoding', encSel.value); } catch (_) {}
+
+                // Clear cache when encoding changes to force re-reading files with new encoding
+                fileContentCache.clear();
+
+                // Re-render files if any are loaded
+                const hasFiles = accumulatedFiles.size > 0 || selectionOrder.length > 0;
+                if (hasFiles) {
+                    await renderAllFiles();
+                    showStatus('Files reloaded with new encoding', 'success');
+                }
             });
         }
+
+        // Clean up on page unload to prevent memory leaks
+        window.addEventListener('beforeunload', () => {
+            if (metricsUpdateTimer) {
+                clearTimeout(metricsUpdateTimer);
+                metricsUpdateTimer = null;
+            }
+            // Clear cache and references
+            fileContentCache.clear();
+            fileMap.clear();
+            accumulatedFiles.clear();
+        });
     </script>
 </body>
 </html>
