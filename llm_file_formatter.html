@@ -135,6 +135,11 @@
             color: #721c24;
         }
 
+        .warning {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+
         .file-tree {
             margin: 20px 0;
             background-color: white;
@@ -471,9 +476,7 @@
     <div id="output"></div>
 
     <script>
-        let selectedFiles = [];
         let selectionOrder = [];
-        let filesLoading = false;
 
         // Configurable limits to control memory usage
         const FILE_LIMITS = {
@@ -531,20 +534,27 @@
             let totalBytes = 0;
             let totalCharacters = 0;
             let errorCount = 0;
+            const seen = new Set();
 
-            // Process accumulated files from drag & drop
+            // Process accumulated files from drag & drop (deduplicated)
             for (const [fileId, file] of accumulatedFiles) {
+                const did = getDedupId(file);
+                if (seen.has(did)) continue;
+                seen.add(did);
                 const result = await processFileMetrics(file);
                 totalBytes += result.bytes;
                 totalCharacters += result.characters;
                 if (result.error) errorCount++;
             }
 
-            // Process selected files from folder tree
+            // Process selected files from folder tree (deduplicated across both sources)
             for (const filePath of selectionOrder) {
                 const file = fileMap.get(filePath);
                 if (!file || !isTextFile(file)) continue;
 
+                const did = getDedupId(file);
+                if (seen.has(did)) continue;
+                seen.add(did);
                 const result = await processFileMetrics(file);
                 totalBytes += result.bytes;
                 totalCharacters += result.characters;
@@ -613,6 +623,9 @@
             '1m': 0
         };
 
+        // Track if a bar has already animated once
+        let animatedOnce = new Set();
+
         // Debounce timer for metrics updates
         let metricsUpdateTimer = null;
 
@@ -634,20 +647,25 @@
             const percentage = Math.min(100, (currentTokens / maxTokens) * 100);
             const percentageText = percentage.toFixed(1) + '%';
 
-            // Update percentage text
-            document.getElementById(`percent${limitKey}`).textContent = percentageText;
+            // Update percentage text (defensive: element may be missing)
+            const percentEl = document.getElementById(`percent${limitKey}`);
+            if (percentEl) percentEl.textContent = percentageText;
 
             // Update bar width
             const bar = document.getElementById(`bar${limitKey}`);
+            if (!bar) {
+                previousPercentages[limitKey] = percentage;
+                return;
+            }
 
-            // Check if percentage increased (to trigger animation)
+            // Check if this is the first growth from 0 for this bar, then animate once
             const prevPercentage = previousPercentages[limitKey] || 0;
-            if (percentage > prevPercentage && percentage > 0) {
-                // Add animation class temporarily
+            if (percentage > 0 && prevPercentage === 0 && !animatedOnce.has(limitKey)) {
                 bar.classList.add('animating');
                 setTimeout(() => {
                     bar.classList.remove('animating');
                 }, 800); // Match animation duration
+                animatedOnce.add(limitKey);
             }
 
             bar.style.width = percentage + '%';
@@ -676,11 +694,7 @@
             }
         }
 
-        function setLoading(loading) {
-            filesLoading = loading;
-            const btn = document.getElementById('copyButton');
-            if (btn) btn.disabled = loading;
-        }
+        // Note: removed unused loading state to simplify logic
 
         // Determine if a file should be treated as text
         function isTextFile(file) {
@@ -720,7 +734,7 @@
                 const message = warnOnly
                     ? `Warning: Too many files (max ${FILE_LIMITS.MAX_FILES}). Some files may be skipped.`
                     : `Error: Cannot process ${count} files. Maximum is ${FILE_LIMITS.MAX_FILES} files.`;
-                showStatus(message, 'error');
+                showStatus(message, warnOnly ? 'warning' : 'error');
                 hasCountError = true;
             }
 
@@ -731,7 +745,7 @@
                 const message = warnOnly
                     ? `Warning: Total size exceeds limit (${lim}MB). Some files may be skipped.`
                     : `Error: Total size (${(totalSize / 1024 / 1024).toFixed(0)}MB) exceeds ${lim}MB limit.`;
-                showStatus(message, 'error');
+                showStatus(message, warnOnly ? 'warning' : 'error');
                 hasSizeError = true;
             }
 
@@ -773,8 +787,9 @@
 
         // Generate unique identifier for a file
         function getFileId(file) {
-            // Use name, size, and lastModified to create a unique ID
-            return `${file.name}-${file.size}-${file.lastModified}`;
+            // Use path (when available), size, and lastModified to create a more unique ID
+            const pathPart = file && (file.webkitRelativePath || file.name) ? (file.webkitRelativePath || file.name) : '';
+            return `${pathPart}-${file.size}-${file.lastModified}`;
         }
 
         // Generate a more robust unique ID for DOM elements
@@ -795,6 +810,45 @@
             return `${prefix}-${Math.abs(hash).toString(36)}-${timestamp}-${random}`;
         }
 
+        // Generate a deduplication ID that is stable across sources (drop vs folder)
+        // Uses name, size, lastModified and type; intentionally ignores path
+        function getDedupId(file) {
+            const name = file && file.name ? file.name : '';
+            const size = file && typeof file.size === 'number' ? file.size : 0;
+            const lm = file && typeof file.lastModified === 'number' ? file.lastModified : 0;
+            const type = file && file.type ? file.type : '';
+            return `${name}::${size}::${lm}::${type}`;
+        }
+
+        // Aggregate current files (accumulated + selected) into a deduplicated set
+        function aggregateCurrentFilesDedup() {
+            const idsSet = new Set();
+            let totalSize = 0;
+
+            // Accumulated (drag & drop)
+            for (const f of accumulatedFiles.values()) {
+                if (!f) continue;
+                const id = getDedupId(f);
+                if (!idsSet.has(id)) {
+                    idsSet.add(id);
+                    totalSize += f.size || 0;
+                }
+            }
+
+            // Selected from folder
+            for (const p of selectionOrder) {
+                const f = fileMap.get(p);
+                if (!f || !isTextFile(f)) continue;
+                const id = getDedupId(f);
+                if (!idsSet.has(id)) {
+                    idsSet.add(id);
+                    totalSize += f.size || 0;
+                }
+            }
+
+            return { idsSet, count: idsSet.size, size: totalSize };
+        }
+
         // Read file with caching to avoid duplicate reads
         async function readFileCached(file) {
             const encodingSelect = document.getElementById('encodingSelect');
@@ -804,6 +858,9 @@
             // Check cache first (including cached errors)
             if (fileContentCache.has(fileId)) {
                 const cached = fileContentCache.get(fileId);
+                // Touch entry to approximate LRU behavior
+                fileContentCache.delete(fileId);
+                fileContentCache.set(fileId, cached);
                 // If it's a cached error, throw it again
                 if (cached instanceof Error) {
                     throw cached;
@@ -851,9 +908,12 @@
             let omittedLarge = 0;
             let totalFiles = 0;
             let errorFiles = 0;
+            const seen = new Set();
 
             // Process accumulated files from drag & drop
             for (const [fileId, file] of accumulatedFiles) {
+                const did = getDedupId(file);
+                if (seen.has(did)) continue;
                 if (file.size > FILE_LIMITS.MAX_FILE_SIZE) {
                     console.warn(`Skipped very large file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
                     omittedLarge++;
@@ -876,12 +936,14 @@
                     const safeName = escapeHtml(file.name);
                     results.push('Filename: ' + safeName + '\n' + fence + fileExtension + '\n' + content + '\n' + fence + '\n\n');
                     totalFiles++;
+                    seen.add(did);
                 } catch (err) {
                     console.error(`Error reading file ${file.name}:`, err);
                     errorFiles++;
                     // Add placeholder for errored file
                     const safeName = escapeHtml(file.name);
                     results.push('Filename: ' + safeName + '\n```\n[Error reading file: ' + escapeHtml(err.message) + ']\n```\n\n');
+                    seen.add(did);
                 }
             }
 
@@ -889,6 +951,8 @@
             for (const filePath of selectionOrder) {
                 const file = fileMap.get(filePath);
                 if (!file || !isTextFile(file)) continue;
+                const did = getDedupId(file);
+                if (seen.has(did)) continue;
 
                 if (file.size > FILE_LIMITS.MAX_FILE_SIZE) {
                     console.warn(`Skipped very large file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
@@ -912,12 +976,14 @@
                     const safeName = escapeHtml(file.name);
                     results.push('Filename: ' + safeName + '\n' + fence + fileExtension + '\n' + content + '\n' + fence + '\n\n');
                     totalFiles++;
+                    seen.add(did);
                 } catch (err) {
                     console.error(`Error reading file ${file.name}:`, err);
                     errorFiles++;
                     // Add placeholder for errored file
                     const safeName = escapeHtml(file.name);
                     results.push('Filename: ' + safeName + '\n```\n[Error reading file: ' + escapeHtml(err.message) + ']\n```\n\n');
+                    seen.add(did);
                 }
             }
 
@@ -935,8 +1001,8 @@
 
             showStatus(msg, errorFiles > 0 ? 'error' : 'success');
 
-            // Update metrics panel
-            updateMetricsPanel();
+            // Update metrics panel (debounced)
+            updateMetricsPanelDebounced();
         }
 
         // Clear all accumulated files
@@ -948,7 +1014,6 @@
             fileContentCache.clear();
 
             // Clear folder selection
-            selectedFiles = [];
             selectionOrder = [];
             fileMap.clear();
             currentFolderFiles = [];
@@ -986,6 +1051,9 @@
                 '1m': 0
             };
 
+            // Reset one-time animation flags
+            animatedOnce = new Set();
+
             showStatus('All files cleared', 'success');
         }
 
@@ -1009,10 +1077,28 @@
                 return;
             }
 
-            // Check total accumulated files don't exceed limits
-            const potentialTotal = accumulatedFiles.size + textFiles.length;
+            // Deduplicated checks across accumulated + selected + new
+            const { idsSet: existingIds, count: currentCount, size: currentSize } = aggregateCurrentFilesDedup();
+            const tmpIds = new Set(existingIds);
+            let newUniqueCount = 0;
+            let newUniqueSize = 0;
+            for (const f of textFiles) {
+                const id = getDedupId(f);
+                if (!tmpIds.has(id)) {
+                    tmpIds.add(id);
+                    newUniqueCount++;
+                    newUniqueSize += f.size || 0;
+                }
+            }
+            const potentialTotal = currentCount + newUniqueCount;
             if (potentialTotal > FILE_LIMITS.MAX_FILES) {
                 showStatus(`Cannot add files. Would exceed limit of ${FILE_LIMITS.MAX_FILES} files.`, 'error');
+                return;
+            }
+            const potentialTotalSize = currentSize + newUniqueSize;
+            if (potentialTotalSize > FILE_LIMITS.MAX_TOTAL_SIZE) {
+                const lim = (FILE_LIMITS.MAX_TOTAL_SIZE / 1024 / 1024).toFixed(0);
+                showStatus(`Cannot add files. Total size would exceed ${lim}MB limit.`, 'error');
                 return;
             }
 
@@ -1036,8 +1122,7 @@
             // Update file counter display
             updateFileCounter();
 
-            // Update metrics panel
-            await updateMetricsPanel();
+            // Metrics panel updated by renderAllFiles via debounce
 
             // Show status message
             let statusMsg = '';
@@ -1097,6 +1182,12 @@
                 textToCopy = output.innerText || output.textContent || '';
             }
 
+            // Guard: do not copy empty content
+            if (!textToCopy || !textToCopy.trim()) {
+                showStatus('No content to copy', 'error');
+                return;
+            }
+
             try {
                 if (navigator.clipboard && navigator.clipboard.writeText) {
                     await navigator.clipboard.writeText(textToCopy);
@@ -1135,7 +1226,8 @@
         }
 
         function escapeHtml(unsafe) {
-            return unsafe
+            const s = unsafe == null ? '' : String(unsafe);
+            return s
                  .replace(/&/g, "&amp;")
                  .replace(/</g, "&lt;")
                  .replace(/>/g, "&gt;")
@@ -1190,16 +1282,10 @@
                 const files = Array.from(e.target.files);
                 const textFiles = files.filter(isTextFile);
 
-                // Validate files strictly - prevent loading if limits exceeded
-                const isValid = validateFiles(textFiles, false);
-                if (!isValid) {
-                    // Clear the file tree if validation fails
-                    fileTree.style.display = 'none';
-                    return;
-                }
+                // Warn only; enforce limits on actual checkbox selection
+                validateFiles(textFiles, true);
 
                 // Clear previous references completely to prevent memory leaks
-                selectedFiles = [];
                 selectionOrder = [];
 
                 // Clear the map entries before creating new one
@@ -1222,7 +1308,7 @@
                     fileMap.set(path, file);
                 }
 
-                setLoading(false);
+                // loading state removed (no-op)
                 showStatus('Folder loaded. Select files and click "Copy".', 'success');
             };
             
@@ -1277,6 +1363,45 @@
             
             return root;
         }
+
+        // Update a folder LI checkbox based on the state of its descendant checkboxes
+        function updateFolderCheckboxState(folderLi) {
+            if (!folderLi) return;
+            const folderCb = folderLi.querySelector('input[type="checkbox"][data-is-folder="true"]');
+            if (!folderCb) return;
+
+            const childCbs = Array.from(folderLi.querySelectorAll('input[type="checkbox"]'))
+                .filter(cb => cb !== folderCb && !cb.disabled);
+
+            if (childCbs.length === 0) {
+                folderCb.indeterminate = false;
+                folderCb.checked = false;
+                return;
+            }
+
+            const checkedCount = childCbs.filter(cb => cb.checked).length;
+            if (checkedCount === 0) {
+                folderCb.indeterminate = false;
+                folderCb.checked = false;
+            } else if (checkedCount === childCbs.length) {
+                folderCb.indeterminate = false;
+                folderCb.checked = true;
+            } else {
+                folderCb.indeterminate = true;
+                folderCb.checked = false;
+            }
+        }
+
+        // Walk up and update all ancestor folders' tri-state after a change
+        function updateAncestorFolders(startLi) {
+            let current = startLi;
+            while (current) {
+                const parentLi = current.parentElement ? current.parentElement.closest('li.tree-item[data-is-folder="true"]') : null;
+                if (!parentLi) break;
+                updateFolderCheckboxState(parentLi);
+                current = parentLi;
+            }
+        }
         
         // Render the file tree in the DOM
         function renderFileTree(node, parentElement = null) {
@@ -1303,6 +1428,8 @@
             items.forEach(item => {
                 const li = document.createElement('li');
                 li.className = 'tree-item';
+                li.dataset.path = item.path;
+                li.dataset.isFolder = item.isFolder ? 'true' : 'false';
                 
                 // Container for item content (icon, checkbox, label)
                 const itemContent = document.createElement('div');
@@ -1343,7 +1470,10 @@
                         updateSelection(checkbox, true); // Skip individual metrics update
 
                         // Update metrics with debounce for better performance
-                        await updateMetricsPanelDebounced();
+                        updateMetricsPanelDebounced();
+                        // Update tri-state on this folder and ancestors
+                        updateFolderCheckboxState(li);
+                        updateAncestorFolders(li);
                     };
                     
                     const folderIcon = document.createElement('span');
@@ -1368,6 +1498,8 @@
                     if (Object.keys(item.children).length > 0) {
                         renderFileTree(item, li);
                     }
+                    // Initialize tri-state based on children
+                    updateFolderCheckboxState(li);
                 } else {
                     // File
                     const spacer = document.createElement('span');
@@ -1388,7 +1520,9 @@
                     checkbox.onchange = async function() {
                         updateSelection(checkbox, true); // Skip metrics update in updateSelection
                         // Update metrics with debounce for better performance
-                        await updateMetricsPanelDebounced();
+                        updateMetricsPanelDebounced();
+                        // Update parent folder tri-state
+                        updateAncestorFolders(li);
                     };
                     
                     const fileIcon = document.createElement('span');
@@ -1428,30 +1562,47 @@
             });
         }
         
-        // Handle file selection/deselection
+        // Handle file selection/deselection with limit enforcement (dedup-aware)
         function updateSelection(checkbox, skipMetricsUpdate = false) {
             const path = checkbox.dataset.path;
             const isFolder = checkbox.dataset.isFolder === 'true';
 
-            if (isFolder) {
-                // Do nothing specific for folders here; individual files update separately
-            } else {
-                // It's a file
+            if (!isFolder) {
+                const file = fileMap.get(path);
+                if (!file) {
+                    if (checkbox.checked) checkbox.checked = false;
+                    return;
+                }
+
                 if (checkbox.checked) {
-                    // Add to selection if not already present
-                    if (!selectionOrder.includes(path)) {
-                        selectionOrder.push(path);
+                    // Enforce file count and size with cross-source deduplication
+                    const { idsSet, count: currentCount, size: currentSize } = aggregateCurrentFilesDedup();
+                    const isAlreadySelected = selectionOrder.includes(path);
+                    const fileId = getDedupId(file);
+                    const addsNewUnique = !idsSet.has(fileId) && !isAlreadySelected;
+                    const potentialCount = currentCount + (addsNewUnique ? 1 : 0);
+                    if (potentialCount > FILE_LIMITS.MAX_FILES) {
+                        checkbox.checked = false;
+                        showStatus(`Cannot select more files. Limit is ${FILE_LIMITS.MAX_FILES}.`, 'error');
+                        return;
                     }
+
+                    // Enforce total size (accumulated + selected + this) dedup-aware
+                    const potentialSize = currentSize + (addsNewUnique ? (file.size || 0) : 0);
+                    if (potentialSize > FILE_LIMITS.MAX_TOTAL_SIZE) {
+                        const lim = (FILE_LIMITS.MAX_TOTAL_SIZE / 1024 / 1024).toFixed(0);
+                        checkbox.checked = false;
+                        showStatus(`Cannot select file. Total size would exceed ${lim}MB limit.`, 'error');
+                        return;
+                    }
+
+                    if (!selectionOrder.includes(path)) selectionOrder.push(path);
                 } else {
-                    // Remove from selection
                     const index = selectionOrder.indexOf(path);
-                    if (index > -1) {
-                        selectionOrder.splice(index, 1);
-                    }
+                    if (index > -1) selectionOrder.splice(index, 1);
                 }
             }
 
-            // Update metrics panel when selection changes (unless told to skip)
             if (!skipMetricsUpdate) {
                 updateMetricsPanelDebounced();
             }
@@ -1466,7 +1617,7 @@
                 reader.onabort = () => reject(new Error('Read cancelled'));
                 const encodingSelect = document.getElementById('encodingSelect');
                 const selectedEncoding = encodingSelect && encodingSelect.value ? encodingSelect.value : 'utf-8';
-                // FileReader doesn't accept 'windows-1252', map it to 'ISO-8859-1'
+                // Many browsers alias Windows-1252 and ISO-8859-1; keep mapping for broad compatibility
                 const actualEncoding = selectedEncoding === 'windows-1252' ? 'ISO-8859-1' : selectedEncoding;
                 reader.readAsText(file, actualEncoding);
             });

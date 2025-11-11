@@ -17,6 +17,9 @@ A lightweight, single‑file HTML app to quickly format local files for sharing 
 - **Clear All**: Reset everything and start over with one click
 - **Folder Selection**: Select entire folders with a tree view and checkboxes
 - **Smart Text Filtering**: Ignores non‑text files, optional "Hide binaries" toggle
+- **Token Metrics Dashboard**: Real‑time estimation of tokens (~characters ÷ 4) with visual progress bars for common LLM context limits (64K, 128K, 500K, 1M tokens)
+- **Dynamic Progress Indicators**: Color‑coded progress bars (green < 70%, yellow 70‑90%, red > 90%) help you stay within model limits
+- **Performance Optimized**: Smart caching system avoids re‑reading files, debounced metrics updates for smooth UI
 - **Automatic Formatting**: Wraps content in code fences with a language tag inferred from file extension
 - **Clipboard**: Copies the prepared, escaped text to your clipboard
 - **Encoding**: Choose between UTF‑8 and Windows‑1252 (ISO‑8859‑1) when reading files
