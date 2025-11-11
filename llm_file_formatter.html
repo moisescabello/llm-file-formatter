@@ -114,7 +114,6 @@
             text-align: center;
             font-weight: bold;
             opacity: 0;
-            transition: opacity 0.3s ease;
             max-height: 0;
             overflow: hidden;
             transition: opacity 0.3s ease, max-height 0.3s ease, margin 0.3s ease;
@@ -476,11 +475,13 @@
         let selectionOrder = [];
         let filesLoading = false;
 
-        // Limits to control memory usage
-        const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB per file
-        const MAX_CONTENT_LENGTH = 200_000; // Max characters per content
-        const MAX_FILES = 100; // Max files per operation
-        const MAX_TOTAL_SIZE = 50 * 1024 * 1024; // 50MB total
+        // Configurable limits to control memory usage
+        const FILE_LIMITS = {
+            MAX_FILE_SIZE: 10 * 1024 * 1024, // 10MB per file
+            MAX_CONTENT_LENGTH: 200_000, // Max characters per content
+            MAX_FILES: 100, // Max files per operation
+            MAX_TOTAL_SIZE: 50 * 1024 * 1024 // 50MB total
+        };
 
         // Index files by path to avoid storing contents in memory
         let fileMap = new Map();
@@ -488,6 +489,9 @@
 
         // Accumulated files from drag & drop operations
         let accumulatedFiles = new Map(); // Key: unique identifier, Value: file object
+
+        // File content cache to avoid duplicate reads
+        const fileContentCache = new Map(); // Key: file ID, Value: content
 
         // Token limits for different models
         const TOKEN_LIMITS = {
@@ -504,30 +508,30 @@
 
             // Process accumulated files from drag & drop
             for (const [fileId, file] of accumulatedFiles) {
-                if (file.size > MAX_FILE_SIZE) continue;
+                if (file.size > FILE_LIMITS.MAX_FILE_SIZE) continue;
 
                 totalBytes += file.size;
 
                 try {
-                    const content = await readFileAsText(file);
+                    const content = await readFileCached(file);
                     totalCharacters += content.length;
                 } catch (err) {
-                    console.error(`Error reading file ${file.name} for metrics:`, err);
+                    showStatus(`Error reading file ${file.name}: ${err.message}`, 'error');
                 }
             }
 
             // Process selected files from folder tree
             for (const filePath of selectionOrder) {
                 const file = fileMap.get(filePath);
-                if (!file || !isTextFile(file) || file.size > MAX_FILE_SIZE) continue;
+                if (!file || !isTextFile(file) || file.size > FILE_LIMITS.MAX_FILE_SIZE) continue;
 
                 totalBytes += file.size;
 
                 try {
-                    const content = await readFileAsText(file);
+                    const content = await readFileCached(file);
                     totalCharacters += content.length;
                 } catch (err) {
-                    console.error(`Error reading file ${file.name} for metrics:`, err);
+                    showStatus(`Error reading file ${file.name}: ${err.message}`, 'error');
                 }
             }
 
@@ -667,20 +671,28 @@
         }
 
         // Basic validation of file count and total size
+        // Returns true if valid, false if invalid
+        // When warnOnly=true, shows warning but doesn't block operation
         function validateFiles(files, warnOnly = false) {
             const count = files.length;
-            if (count > MAX_FILES) {
-                showStatus(`Too many files (max ${MAX_FILES})`, 'error');
-                return warnOnly ? true : false;
+            let isValid = true;
+
+            if (count > FILE_LIMITS.MAX_FILES) {
+                showStatus(`Warning: Too many files (max ${FILE_LIMITS.MAX_FILES}). Some files may be skipped.`, warnOnly ? 'error' : 'error');
+                isValid = false;
             }
+
             let totalSize = 0;
             for (const f of files) totalSize += f.size || 0;
-            if (totalSize > MAX_TOTAL_SIZE) {
-                const lim = (MAX_TOTAL_SIZE / 1024 / 1024).toFixed(0);
-                showStatus(`Total size exceeds limit (${lim}MB)`, 'error');
-                return warnOnly ? true : false;
+            if (totalSize > FILE_LIMITS.MAX_TOTAL_SIZE) {
+                const lim = (FILE_LIMITS.MAX_TOTAL_SIZE / 1024 / 1024).toFixed(0);
+                showStatus(`Warning: Total size exceeds limit (${lim}MB). Some files may be skipped.`, warnOnly ? 'error' : 'error');
+                isValid = false;
             }
-            return true;
+
+            // If warnOnly is true, we return true despite validation failure (allowing operation to continue)
+            // If warnOnly is false, we return the actual validation result
+            return warnOnly ? true : isValid;
         }
 
         // Sanitize the language tag for the code fence
@@ -721,49 +733,110 @@
             return `${file.name}-${file.size}-${file.lastModified}`;
         }
 
-        // Render all accumulated files
+        // Read file with caching to avoid duplicate reads
+        async function readFileCached(file) {
+            const fileId = getFileId(file);
+
+            // Check cache first
+            if (fileContentCache.has(fileId)) {
+                return fileContentCache.get(fileId);
+            }
+
+            // Read file and cache the result
+            try {
+                const content = await readFileAsText(file);
+                fileContentCache.set(fileId, content);
+                return content;
+            } catch (err) {
+                console.error(`Error reading file ${file.name}:`, err);
+                throw err;
+            }
+        }
+
+        // Render all accumulated and selected files
         async function renderAllFiles() {
             const output = document.getElementById('output');
             output.innerHTML = '';
 
-            if (accumulatedFiles.size === 0) {
+            const hasAccumulatedFiles = accumulatedFiles.size > 0;
+            const hasSelectedFiles = selectionOrder.length > 0;
+
+            if (!hasAccumulatedFiles && !hasSelectedFiles) {
                 return;
             }
 
             const results = [];
             let omittedLarge = 0;
+            let totalFiles = 0;
             const encodingSelect = document.getElementById('encodingSelect');
             const selectedEncoding = encodingSelect && encodingSelect.value ? encodingSelect.value : 'utf-8';
 
+            // Process accumulated files from drag & drop
             for (const [fileId, file] of accumulatedFiles) {
-                if (file.size > MAX_FILE_SIZE) {
+                if (file.size > FILE_LIMITS.MAX_FILE_SIZE) {
                     console.warn(`Skipped very large file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
                     omittedLarge++;
                     continue;
                 }
 
                 try {
-                    const contentRaw = await readFileAsText(file);
+                    const contentRaw = await readFileCached(file);
                     let content = contentRaw || '';
-                    if (content.length > MAX_CONTENT_LENGTH) {
-                        content = content.substring(0, MAX_CONTENT_LENGTH) + '\n[... content truncated ...]';
+                    if (content.length > FILE_LIMITS.MAX_CONTENT_LENGTH) {
+                        content = content.substring(0, FILE_LIMITS.MAX_CONTENT_LENGTH) + '\n[... content truncated ...]';
                     }
+                    // Escape HTML content to prevent injection
+                    content = escapeHtml(content);
+
                     const parts = file.name.split('.');
                     const extRaw = parts.length > 1 ? parts.pop().toLowerCase() : '';
                     const fileExtension = mapLangTag(extRaw);
                     const fence = getSafeFence(content);
                     const safeName = escapeHtml(file.name);
-                    results.push('Filename: ' + safeName + '\n' + fence + fileExtension + '\n' + escapeHtml(content) + '\n' + fence + '\n\n');
+                    results.push('Filename: ' + safeName + '\n' + fence + fileExtension + '\n' + content + '\n' + fence + '\n\n');
+                    totalFiles++;
                 } catch (err) {
-                    console.error(`Error reading file ${file.name}:`, err);
+                    showStatus(`Error reading file ${file.name}: ${err.message}`, 'error');
+                }
+            }
+
+            // Process selected files from folder tree
+            for (const filePath of selectionOrder) {
+                const file = fileMap.get(filePath);
+                if (!file || !isTextFile(file)) continue;
+
+                if (file.size > FILE_LIMITS.MAX_FILE_SIZE) {
+                    console.warn(`Skipped very large file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
+                    omittedLarge++;
+                    continue;
+                }
+
+                try {
+                    const contentRaw = await readFileCached(file);
+                    let content = contentRaw || '';
+                    if (content.length > FILE_LIMITS.MAX_CONTENT_LENGTH) {
+                        content = content.substring(0, FILE_LIMITS.MAX_CONTENT_LENGTH) + '\n[... content truncated ...]';
+                    }
+                    // Escape HTML content to prevent injection
+                    content = escapeHtml(content);
+
+                    const parts = file.name.split('.');
+                    const extRaw = parts.length > 1 ? parts.pop().toLowerCase() : '';
+                    const fileExtension = mapLangTag(extRaw);
+                    const fence = getSafeFence(content);
+                    const safeName = escapeHtml(file.name);
+                    results.push('Filename: ' + safeName + '\n' + fence + fileExtension + '\n' + content + '\n' + fence + '\n\n');
+                    totalFiles++;
+                } catch (err) {
+                    showStatus(`Error reading file ${file.name}: ${err.message}`, 'error');
                 }
             }
 
             output.innerHTML = results.join('');
 
             const msg = omittedLarge > 0
-                ? `${accumulatedFiles.size} files ready. Skipped ${omittedLarge} large file(s). Click "Copy".`
-                : `${accumulatedFiles.size} files ready. Click "Copy".`;
+                ? `${totalFiles} files ready. Skipped ${omittedLarge} large file(s). Click "Copy".`
+                : `${totalFiles} files ready. Click "Copy".`;
             showStatus(msg, 'success');
 
             // Update metrics panel
@@ -774,6 +847,9 @@
         function clearAll() {
             // Clear accumulated files from drag & drop
             accumulatedFiles.clear();
+
+            // Clear file content cache
+            fileContentCache.clear();
 
             // Clear folder selection
             selectedFiles = [];
@@ -833,8 +909,8 @@
 
             // Check total accumulated files don't exceed limits
             const potentialTotal = accumulatedFiles.size + textFiles.length;
-            if (potentialTotal > MAX_FILES) {
-                showStatus(`Cannot add files. Would exceed limit of ${MAX_FILES} files.`, 'error');
+            if (potentialTotal > FILE_LIMITS.MAX_FILES) {
+                showStatus(`Cannot add files. Would exceed limit of ${FILE_LIMITS.MAX_FILES} files.`, 'error');
                 return;
             }
 
@@ -892,71 +968,21 @@
             const output = document.getElementById('output');
             let textToCopy = '';
 
-            // Build combined content from both accumulated files and folder selection
-            const partsOut = [];
+            // Check if we have files to copy
+            const hasFiles = accumulatedFiles.size > 0 || selectionOrder.length > 0;
 
-            // First, add accumulated files from drag & drop
-            if (accumulatedFiles.size > 0) {
-                for (const [fileId, file] of accumulatedFiles) {
-                    if (file.size > MAX_FILE_SIZE) {
-                        console.warn(`Skipped very large file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
-                        continue;
-                    }
-                    try {
-                        const contentRaw = await readFileAsText(file);
-                        let content = contentRaw || '';
-                        if (content.length > MAX_CONTENT_LENGTH) {
-                            content = content.substring(0, MAX_CONTENT_LENGTH) + '\n[... content truncated ...]';
-                        }
-                        const parts = file.name.split('.');
-                        const extRaw = parts.length > 1 ? parts.pop().toLowerCase() : '';
-                        const fileExtension = mapLangTag(extRaw);
-                        const fence = getSafeFence(content);
-                        const safeName = escapeHtml(file.name);
-                        partsOut.push('Filename: ' + safeName + '\n' + fence + fileExtension + '\n' + escapeHtml(content) + '\n' + fence + '\n\n');
-                    } catch (err) {
-                        console.error(`Error reading file ${file.name}:`, err);
-                    }
+            if (hasFiles) {
+                // If output is already populated, use it directly to avoid re-reading files
+                const currentOutput = output.innerText || output.textContent || '';
+                if (currentOutput.trim()) {
+                    textToCopy = currentOutput;
+                } else {
+                    // Output is empty, need to render first
+                    await renderAllFiles();
+                    textToCopy = output.innerText || output.textContent || '';
                 }
-            }
-
-            // Then, add selected files from folder tree
-            if (selectionOrder.length > 0) {
-                for (const filePath of selectionOrder) {
-                    const file = fileMap.get(filePath);
-                    if (!file) continue;
-                    if (!isTextFile(file)) continue;
-                    if (file.size > MAX_FILE_SIZE) {
-                        console.warn(`Skipped very large file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
-                        continue;
-                    }
-                    try {
-                        const contentRaw = await readFileAsText(file);
-                        let content = contentRaw || '';
-                        if (content.length > MAX_CONTENT_LENGTH) {
-                            content = content.substring(0, MAX_CONTENT_LENGTH) + '\n[... content truncated ...]';
-                        }
-                        const parts = file.name.split('.');
-                        const extRaw = parts.length > 1 ? parts.pop().toLowerCase() : '';
-                        const fileExtension = mapLangTag(extRaw);
-                        const fence = getSafeFence(content);
-                        const safeName = escapeHtml(file.name);
-                        partsOut.push('Filename: ' + safeName + '\n' + fence + fileExtension + '\n' + escapeHtml(content) + '\n' + fence + '\n\n');
-                    } catch (err) {
-                        console.error(`Error reading file ${file.name}:`, err);
-                        showStatus(`Error reading ${file.name}`, 'error');
-                    }
-                }
-            }
-
-            // If we have content to copy
-            if (partsOut.length > 0) {
-                textToCopy = partsOut.join('');
-                output.innerHTML = textToCopy;
-                // Copy visible text (without HTML entities)
-                textToCopy = output.innerText || output.textContent || '';
             } else {
-                // Fallback to current output content
+                // No files selected, copy whatever is in output
                 textToCopy = output.innerText || output.textContent || '';
             }
 
@@ -964,7 +990,7 @@
                 if (navigator.clipboard && navigator.clipboard.writeText) {
                     await navigator.clipboard.writeText(textToCopy);
                 } else {
-                    // Fallback seguro
+                    // Safe fallback
                     const ok = fallbackCopyText(textToCopy);
                     if (!ok) throw new Error('Fallback copy failed');
                 }
@@ -1056,10 +1082,18 @@
                 // Validate but allow to continue for large selections (warn only)
                 validateFiles(textFiles, true);
 
-                // Reset selection and index
+                // Clear previous references completely to prevent memory leaks
                 selectedFiles = [];
                 selectionOrder = [];
+
+                // Clear the map entries before creating new one
+                if (fileMap) {
+                    fileMap.clear();
+                }
                 fileMap = new Map();
+
+                // Clear previous folder files array
+                currentFolderFiles = [];
                 currentFolderFiles = files;
 
                 // Create tree structure
@@ -1178,7 +1212,8 @@
                     checkbox.className = 'checkbox-wrapper';
                     checkbox.dataset.path = item.path;
                     checkbox.dataset.isFolder = 'true';
-                    const folderCbId = 'cb-' + (item.path || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+                    // Use a hash function for unique IDs
+                    const folderCbId = 'cb-folder-' + btoa(item.path || '').replace(/[^a-zA-Z0-9]/g, '').substr(0, 16);
                     checkbox.id = folderCbId;
                     checkbox.onchange = async function() {
                         // Check/uncheck all child items (only enabled)
@@ -1218,7 +1253,7 @@
                         renderFileTree(item, li);
                     }
                 } else {
-                    // Archivo
+                    // File
                     const spacer = document.createElement('span');
                     spacer.className = 'toggle-btn';
                     spacer.style.visibility = 'hidden';
@@ -1228,7 +1263,8 @@
                     checkbox.className = 'checkbox-wrapper';
                     checkbox.dataset.path = item.path;
                     checkbox.dataset.isFolder = 'false';
-                    const fileCbId = 'cb-' + (item.path || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+                    // Use a hash function for unique IDs
+                    const fileCbId = 'cb-file-' + btoa(item.path || '').replace(/[^a-zA-Z0-9]/g, '').substr(0, 16);
                     checkbox.id = fileCbId;
                     const isText = isTextFile(item.file);
                     checkbox.disabled = !isText;
@@ -1314,7 +1350,9 @@
                 reader.onabort = () => reject(new Error('Read cancelled'));
                 const encodingSelect = document.getElementById('encodingSelect');
                 const selectedEncoding = encodingSelect && encodingSelect.value ? encodingSelect.value : 'utf-8';
-                reader.readAsText(file, selectedEncoding);
+                // FileReader doesn't accept 'windows-1252', map it to 'ISO-8859-1'
+                const actualEncoding = selectedEncoding === 'windows-1252' ? 'ISO-8859-1' : selectedEncoding;
+                reader.readAsText(file, actualEncoding);
             });
         }
 
